@@ -59,3 +59,22 @@ Needs `qemu-utils` and root (it maps the qcow2 with `qemu-nbd` and chroots into 
 
 The build fails rather than publishes if either package is missing from the
 finished image or if `qemu-guest-agent` is not enabled in it.
+
+### Traps this build already hit
+
+- **`qemu-img convert -O qcow2` drops compression.** The upstream image is
+  zlib-compressed qcow2 (253 MiB for a 3.5 GiB volume); converting without
+  `-c` published a 677 MB artifact, 2.5x upstream, for an image whose whole
+  point is being smaller. The build now fails above 400 MiB.
+- **libguestfs is not usable on a GitHub runner here.** `virt-customize`'s
+  appliance came up with only `lo` — no NIC at all — so `--install` could
+  never reach the archive, and no resolver setting fixes a missing
+  interface. Hence `qemu-nbd` + chroot, which also skips the TCG penalty
+  from having no `/dev/kvm`.
+- **Do not "enable" qemu-guest-agent.** Its unit ships an empty `[Install]`
+  section, so `systemctl enable` is a no-op and cannot produce a wants
+  symlink. The udev rule starts it when the virtio port appears. An earlier
+  gate asserted the symlink and failed on correct images.
+- **`qemu-nbd -d` returns before the kernel detaches.** Converting straight
+  after fails with "Failed to get shared write lock"; wait for the device
+  size to read 0.
