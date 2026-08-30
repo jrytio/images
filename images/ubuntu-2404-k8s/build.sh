@@ -30,14 +30,30 @@ cat > customize.sh <<'GUEST'
 #!/bin/sh
 set -eu
 
-# The cloud image symlinks /etc/resolv.conf at a systemd-resolved stub that
-# does not exist offline, so apt cannot resolve anything inside the
-# appliance until a real file is written. 10.0.2.3 is qemu slirp's built-in
-# forwarder (what the appliance actually provides); the public resolver is
-# a fallback if libguestfs ever stops using slirp. Restored at the end so a
-# booted node still goes through systemd-resolved.
-rm -f /etc/resolv.conf
-printf 'nameserver 10.0.2.3\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+# Printed unconditionally: when an apt step fails in an appliance the cause
+# is almost always here, and a build log without it is a guessing game.
+echo "=== appliance network ==="
+ip -4 addr 2>/dev/null || true
+ip route 2>/dev/null || true
+echo "--- /etc/resolv.conf ---"
+cat /etc/resolv.conf 2>/dev/null || echo "(absent or dangling symlink)"
+getent hosts archive.ubuntu.com || echo "(resolution failed)"
+echo "========================="
+
+# The cloud image points /etc/resolv.conf at a systemd-resolved stub that
+# does not exist offline. libguestfs normally installs a working one for the
+# duration; if it has not, write resolvers that slirp can NAT. Only touched
+# when resolution is actually broken -- clobbering a working file was the
+# first version's bug.
+RESTORE_RESOLV=0
+if ! getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+  rm -f /etc/resolv.conf
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+  RESTORE_RESOLV=1
+  getent hosts archive.ubuntu.com || {
+    echo "FATAL: no DNS inside the appliance; --network is not working" >&2
+    exit 1; }
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -65,8 +81,10 @@ dpkg-query -W -f='${Package}\t${Version}\n' > /etc/infra-image.manifest
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
-rm -f /etc/resolv.conf
-ln -s ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+if [ "$RESTORE_RESOLV" = 1 ]; then
+  rm -f /etc/resolv.conf
+  ln -s ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+fi
 # Clones must not share a machine-id (it seeds DHCP identity and journald).
 : > /etc/machine-id
 GUEST
@@ -82,7 +100,7 @@ source_commit=${GITHUB_SHA:-unknown}
 EOF
 
 echo "==> customizing"
-sudo -E virt-customize -a "$OUT_NAME" \
+sudo -E virt-customize --network -a "$OUT_NAME" \
   --run customize.sh \
   --copy-in infra-image:/etc
 
