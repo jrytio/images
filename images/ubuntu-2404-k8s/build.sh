@@ -77,40 +77,38 @@ sudo cp /etc/resolv.conf "$MNT/etc/resolv.conf"
 printf '#!/bin/sh\nexit 101\n' | sudo tee "$MNT/usr/sbin/policy-rc.d" >/dev/null
 sudo chmod +x "$MNT/usr/sbin/policy-rc.d"
 
-sudo tee "$MNT/tmp/customize.sh" >/dev/null <<GUEST
+# QUOTED heredoc, and the package list arrives as arguments. An unquoted
+# one expands every $ against the build shell instead of the guest script --
+# which under `set -u` killed the build on a diagnostic's own loop variable.
+sudo tee "$MNT/tmp/customize.sh" >/dev/null <<'GUEST'
 #!/bin/sh
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends $PACKAGES
+apt-get install -y --no-install-recommends "$@"
 
 # Do NOT try to "enable" the unit. qemu-guest-agent.service ships an EMPTY
 # [Install] section, so systemctl enable is a genuine no-op and can never
 # produce a wants symlink -- verified on a live node, which has the agent
-# running and no symlink. What starts it is the udev rule below: the unit
-# BindsTo the virtio-ports device, and the rule sets SYSTEMD_WANTS when
+# running and no symlink. What starts it is a udev rule: the unit BindsTo
+# the virtio-ports device, and the rule sets SYSTEMD_WANTS when
 # org.qemu.guest_agent.0 appears. It appears on every CAPMOX clone because
 # template 1500 enables the agent device. Fabricating an enable symlink
 # would just fight a mechanism that already works.
 #
-# So gate on the mechanism actually shipping, not on a symlink.
-echo "--- udev rules shipped by qemu-guest-agent ---"
-dpkg -L qemu-guest-agent | grep -i udev || echo "(none listed by dpkg)"
-for f in /lib/udev/rules.d/60-qemu-guest-agent.rules \
-         /usr/lib/udev/rules.d/60-qemu-guest-agent.rules; do
-  echo "== $f"; cat "$f" 2>/dev/null || echo "(absent)"
-done
-echo "--- end ---"
-
-test -f /lib/udev/rules.d/60-qemu-guest-agent.rules || {
+# So gate on the mechanism actually shipping, not on a symlink. The rule's
+# path is whatever dpkg says it is: /lib vs /usr/lib and the 60- prefix are
+# not promises.
+RULE=$(dpkg -L qemu-guest-agent | grep '/udev/rules.d/.*\.rules$' | head -1)
+[ -n "$RULE" ] && [ -f "$RULE" ] || {
   echo "FATAL: qemu-guest-agent shipped no udev rule; nothing would start it" >&2
   exit 1; }
-grep -q 'SYSTEMD_WANTS="qemu-guest-agent.service"' \
-  /lib/udev/rules.d/60-qemu-guest-agent.rules || {
+echo "--- $RULE ---"; cat "$RULE"; echo "--- end ---"
+grep -q 'SYSTEMD_WANTS="qemu-guest-agent.service"' "$RULE" || {
   echo "FATAL: the udev rule no longer starts qemu-guest-agent.service" >&2
   exit 1; }
 
-dpkg-query -W -f='\${Package}\t\${Version}\n' > /etc/infra-image.manifest
+dpkg-query -W -f='${Package}\t${Version}\n' > /etc/infra-image.manifest
 
 # The whole point of baking: no apt lists on the node. Skipping this would
 # just move the ~0.18 GiB from first boot into every clone's rootfs.
@@ -120,7 +118,7 @@ GUEST
 sudo chmod +x "$MNT/tmp/customize.sh"
 
 echo "==> installing $PACKAGES"
-sudo chroot "$MNT" /tmp/customize.sh
+sudo chroot "$MNT" /tmp/customize.sh $PACKAGES
 
 sudo cp "$MNT/etc/infra-image.manifest" "${OUT_NAME%.img}.manifest"
 sudo chown "$(id -u):$(id -g)" "${OUT_NAME%.img}.manifest"
