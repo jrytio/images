@@ -147,8 +147,13 @@ cleanup
 trap - EXIT
 
 # Rewrites the qcow2 without the clusters the install churned through.
+# -c is not optional: the upstream image is zlib-compressed qcow2 (253 MiB
+# for a 3.5 GiB volume) and converting without it produced a 646 MiB
+# artifact -- 2.5x upstream, for an image whose entire point is being
+# smaller. Compression costs nothing at run time; PVE converts the disk to
+# raw on import either way.
 echo "==> compacting"
-qemu-img convert -O qcow2 raw.qcow2 "$OUT_NAME"
+qemu-img convert -O qcow2 -c raw.qcow2 "$OUT_NAME"
 [ -s "$OUT_NAME" ] || { echo "FATAL: $OUT_NAME was not produced" >&2; exit 1; }
 rm -f raw.qcow2 upstream.img
 rmdir "$MNT" 2>/dev/null || true
@@ -160,6 +165,12 @@ for p in $PACKAGES; do
 done
 
 sha256sum "$OUT_NAME" "${OUT_NAME%.img}.manifest" > SHA256SUMS
+# Tripwire on the size regression above: upstream is ~265 MiB, so anything
+# past 400 MiB means compression was lost again.
+size=$(stat -c %s "$OUT_NAME")
+echo "image size: $size bytes"
+[ "$size" -lt 419430400 ] || {
+  echo "FATAL: $OUT_NAME is ${size}B -- compression was lost" >&2; exit 1; }
 echo "==> built"
 cat SHA256SUMS
 ls -l
