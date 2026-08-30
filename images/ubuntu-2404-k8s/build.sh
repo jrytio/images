@@ -104,7 +104,10 @@ RULE=$(dpkg -L qemu-guest-agent | grep '/udev/rules.d/.*\.rules$' | head -1)
   echo "FATAL: qemu-guest-agent shipped no udev rule; nothing would start it" >&2
   exit 1; }
 echo "--- $RULE ---"; cat "$RULE"; echo "--- end ---"
-grep -q 'SYSTEMD_WANTS="qemu-guest-agent.service"' "$RULE" || {
+# The key is ENV{SYSTEMD_WANTS}, so the brace sits between the name and the
+# '=' -- a pattern without it matches nothing, which is what rejected a
+# perfectly good image here.
+grep -Eq 'SYSTEMD_WANTS\}?="?qemu-guest-agent\.service' "$RULE" || {
   echo "FATAL: the udev rule no longer starts qemu-guest-agent.service" >&2
   exit 1; }
 
