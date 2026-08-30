@@ -94,6 +94,14 @@ apt-get install -y --no-install-recommends $PACKAGES
 # would just fight a mechanism that already works.
 #
 # So gate on the mechanism actually shipping, not on a symlink.
+echo "--- udev rules shipped by qemu-guest-agent ---"
+dpkg -L qemu-guest-agent | grep -i udev || echo "(none listed by dpkg)"
+for f in /lib/udev/rules.d/60-qemu-guest-agent.rules \
+         /usr/lib/udev/rules.d/60-qemu-guest-agent.rules; do
+  echo "== $f"; cat "$f" 2>/dev/null || echo "(absent)"
+done
+echo "--- end ---"
+
 test -f /lib/udev/rules.d/60-qemu-guest-agent.rules || {
   echo "FATAL: qemu-guest-agent shipped no udev rule; nothing would start it" >&2
   exit 1; }
