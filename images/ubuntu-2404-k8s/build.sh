@@ -21,14 +21,23 @@ rm -rf "$work"; mkdir -p "$work"; cd "$work"
 NBD=/dev/nbd0
 MNT="$work/mnt"
 
-cleanup() {
+# Runs in a subshell: an earlier version disabled errexit here and never
+# restored it, so every later failure -- including qemu-img convert losing
+# its lock -- was ignored and the build published a manifest with no image.
+cleanup() { (
   set +e
   if [ -d "$MNT" ]; then
-    for d in dev/pts dev proc sys; do umount -l "$MNT/$d" 2>/dev/null; done
-    umount -l "$MNT" 2>/dev/null
+    for d in dev/pts dev proc sys; do sudo umount -l "$MNT/$d" 2>/dev/null; done
+    sudo umount -l "$MNT" 2>/dev/null
   fi
-  qemu-nbd -d "$NBD" >/dev/null 2>&1
-}
+  sudo qemu-nbd -d "$NBD" >/dev/null 2>&1
+  # -d returns before the kernel has torn the device down; converting while
+  # it is still attached fails with "Failed to get shared write lock".
+  for _ in $(seq 1 40); do
+    [ "$(cat /sys/block/$(basename "$NBD")/size 2>/dev/null || echo 0)" = "0" ] && break
+    sleep 0.25
+  done
+); }
 trap cleanup EXIT
 
 echo "==> fetching $UPSTREAM_URL"
@@ -75,19 +84,23 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends $PACKAGES
 
-# dpkg's postinst normally enables the unit, but deb-systemd-helper's
-# behaviour in a chroot is not something to take on trust: enable it
-# explicitly, fall back to the symlink, then refuse to ship an image where
-# it is missing. A node whose agent never starts stalls CAPMOX provisioning
-# with no error anywhere near the cause.
-SYSTEMD_OFFLINE=1 systemctl enable qemu-guest-agent 2>/dev/null || true
-if ! ls /etc/systemd/system/*.wants/qemu-guest-agent.service >/dev/null 2>&1; then
-  mkdir -p /etc/systemd/system/multi-user.target.wants
-  ln -sf /lib/systemd/system/qemu-guest-agent.service \\
-     /etc/systemd/system/multi-user.target.wants/qemu-guest-agent.service
-fi
-ls /etc/systemd/system/*.wants/qemu-guest-agent.service >/dev/null 2>&1 || {
-  echo "FATAL: qemu-guest-agent is not enabled in the built image" >&2; exit 1; }
+# Do NOT try to "enable" the unit. qemu-guest-agent.service ships an EMPTY
+# [Install] section, so systemctl enable is a genuine no-op and can never
+# produce a wants symlink -- verified on a live node, which has the agent
+# running and no symlink. What starts it is the udev rule below: the unit
+# BindsTo the virtio-ports device, and the rule sets SYSTEMD_WANTS when
+# org.qemu.guest_agent.0 appears. It appears on every CAPMOX clone because
+# template 1500 enables the agent device. Fabricating an enable symlink
+# would just fight a mechanism that already works.
+#
+# So gate on the mechanism actually shipping, not on a symlink.
+test -f /lib/udev/rules.d/60-qemu-guest-agent.rules || {
+  echo "FATAL: qemu-guest-agent shipped no udev rule; nothing would start it" >&2
+  exit 1; }
+grep -q 'SYSTEMD_WANTS="qemu-guest-agent.service"' \
+  /lib/udev/rules.d/60-qemu-guest-agent.rules || {
+  echo "FATAL: the udev rule no longer starts qemu-guest-agent.service" >&2
+  exit 1; }
 
 dpkg-query -W -f='\${Package}\t\${Version}\n' > /etc/infra-image.manifest
 
@@ -127,6 +140,7 @@ trap - EXIT
 # Rewrites the qcow2 without the clusters the install churned through.
 echo "==> compacting"
 qemu-img convert -O qcow2 raw.qcow2 "$OUT_NAME"
+[ -s "$OUT_NAME" ] || { echo "FATAL: $OUT_NAME was not produced" >&2; exit 1; }
 rm -f raw.qcow2 upstream.img
 rmdir "$MNT" 2>/dev/null || true
 
