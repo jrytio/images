@@ -1,0 +1,48 @@
+# Publishes the baked Ubuntu 24.04 minimal cloud image consumed by
+# jrytio/infra stacks/20-image.
+#
+# The release is the product. infra pins one asset URL plus its sha256, so
+# a build here changes nothing until a PR there bumps the pin -- which is
+# deliberate: the pin bump is the reviewable act that moves a fleet.
+name: ubuntu-2404-k8s
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'images/ubuntu-2404-k8s/**'
+      - '.github/workflows/ubuntu-2404-k8s.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libguestfs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libguestfs-tools
+
+      - name: Build image
+        run: images/ubuntu-2404-k8s/build.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="ubuntu-2404-k8s-$(date -u +%Y%m%d).${{ github.run_number }}"
+          {
+            echo "Ubuntu 24.04 minimal cloud image with node packages baked in."
+            echo
+            echo '```'
+            cat out/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$tag" --title "$tag" --notes-file notes.md \
+            out/*.img out/*.manifest out/SHA256SUMS
+          cat out/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
