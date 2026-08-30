@@ -53,7 +53,7 @@ fails verification.
 
 ### Building locally
 
-Needs `libguestfs-tools`:
+Needs `qemu-utils` and root (it maps the qcow2 with `qemu-nbd` and chroots into it):
 
     images/ubuntu-2404-k8s/build.sh
 
