@@ -64,8 +64,13 @@ for _ in $(seq 1 20); do [ -e "${NBD}p1" ] && break; sleep 0.5; done
 ROOT=""
 for _ in $(seq 1 20); do
   for p in "${NBD}"p*; do
-    fstype="$(lsblk -no FSTYPE "$p" 2>/dev/null)"
-    [ -n "$fstype" ] || fstype="$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)"
+    # `|| true` inside the substitutions: under set -e a probe's nonzero
+    # exit (blkid returns 2 while the signature is still unreadable -- the
+    # very state being retried) would kill the script before the loop can
+    # try again. An empty answer must fall through to the retry, and the
+    # FATAL below stays the only terminal path.
+    fstype="$(lsblk -no FSTYPE "$p" 2>/dev/null || true)"
+    [ -n "$fstype" ] || fstype="$(sudo blkid -o value -s TYPE "$p" 2>/dev/null || true)"
     if [ "$fstype" = "ext4" ]; then ROOT="$p"; break 2; fi
   done
   sleep 0.5
