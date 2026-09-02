@@ -147,11 +147,34 @@ sudo install -D -m 0644 rke2-images-canal.linux-amd64.tar.zst \
   "$MNT/var/lib/rancher/rke2/agent/images/rke2-images-canal.linux-amd64.tar.zst"
 rm -f rke2-images-canal.linux-amd64.tar.zst
 
+# The RKE2 installer and its artifacts, at the exact paths CABPR's
+# airGapped mode hard-codes (bootstrap/internal/cloudinit templates run
+# `INSTALL_RKE2_ARTIFACT_PATH=/opt/rke2-artifacts sh /opt/install.sh`):
+# node provisioning stops depending on github.com being reachable, which
+# would otherwise sit on the scale-up critical path. install.sh comes
+# from the rke2 repo AT THE VERSION TAG, not get.rke2.io, so the same
+# inputs always build the same image. One version per image: install.sh
+# in artifact mode installs whatever the directory holds, so a second
+# version would need its own dir plus a symlink flip -- rebuild instead.
+echo "==> baking rke2 installer + artifacts ($RKE2_VERSION)"
+rke2_dl="https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}"
+curl -fsSL --retry 3 -o rke2.linux-amd64.tar.gz "$rke2_dl/rke2.linux-amd64.tar.gz"
+curl -fsSL --retry 3 -o sha256sum-amd64.txt "$rke2_dl/sha256sum-amd64.txt"
+curl -fsSL --retry 3 -o install.sh \
+  "https://raw.githubusercontent.com/rancher/rke2/${RKE2_VERSION//+/%2B}/install.sh"
+echo "$RKE2_TARBALL_SHA256  rke2.linux-amd64.tar.gz" | sha256sum -c -
+echo "$SHA256SUM_FILE_SHA256  sha256sum-amd64.txt" | sha256sum -c -
+sudo install -D -m 0644 rke2.linux-amd64.tar.gz "$MNT/opt/rke2-artifacts/rke2.linux-amd64.tar.gz"
+sudo install -D -m 0644 sha256sum-amd64.txt "$MNT/opt/rke2-artifacts/sha256sum-amd64.txt"
+sudo install -m 0755 install.sh "$MNT/opt/install.sh"
+rm -f rke2.linux-amd64.tar.gz sha256sum-amd64.txt install.sh
+
 sudo tee "$MNT/etc/infra-image" >/dev/null <<EOF
 upstream_url=$UPSTREAM_URL
 upstream_sha256=$UPSTREAM_SHA256
 packages=$PACKAGES
 rke2_canal_images=$RKE2_VERSION
+rke2_artifacts=$RKE2_VERSION
 source_repo=${GITHUB_REPOSITORY:-local}
 source_commit=${GITHUB_SHA:-unknown}
 EOF
