@@ -126,10 +126,32 @@ sudo chroot "$MNT" /tmp/customize.sh $PACKAGES
 sudo cp "$MNT/etc/infra-image.manifest" "${OUT_NAME%.img}.manifest"
 sudo chown "$(id -u):$(id -g)" "${OUT_NAME%.img}.manifest"
 
+# The canal (CNI) images, baked as an RKE2 airgap tarball. rke2 imports
+# every tarball in agent/images/ into containerd at startup, before
+# anything needs the network -- which is the point: the node registry
+# mirrors resolve to core's MetalLB LB IP, kube-proxy DNATs that to
+# traefik POD IPs, and pod IPs only route once canal is up. So on a fresh
+# node every pull -- including canal's own -- blackholes for ~5-6 minutes
+# of TCP timeouts until containerd falls back to the upstream endpoint.
+# Baking canal breaks the cycle: CNI up in seconds, mirrors reachable,
+# every other image arrives through the cache at full speed.
+#
+# The tarball is pinned to one RKE2 version while clusters track infra's;
+# skew is degraded-not-broken -- unmatched tags just take the slow
+# fallback path again until the next image build catches up.
+echo "==> baking rke2 canal images ($RKE2_VERSION)"
+curl -fsSL --retry 3 -o rke2-images-canal.linux-amd64.tar.zst \
+  "https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}/rke2-images-canal.linux-amd64.tar.zst"
+echo "$CANAL_IMAGES_SHA256  rke2-images-canal.linux-amd64.tar.zst" | sha256sum -c -
+sudo install -D -m 0644 rke2-images-canal.linux-amd64.tar.zst \
+  "$MNT/var/lib/rancher/rke2/agent/images/rke2-images-canal.linux-amd64.tar.zst"
+rm -f rke2-images-canal.linux-amd64.tar.zst
+
 sudo tee "$MNT/etc/infra-image" >/dev/null <<EOF
 upstream_url=$UPSTREAM_URL
 upstream_sha256=$UPSTREAM_SHA256
 packages=$PACKAGES
+rke2_canal_images=$RKE2_VERSION
 source_repo=${GITHUB_REPOSITORY:-local}
 source_commit=${GITHUB_SHA:-unknown}
 EOF
@@ -165,11 +187,12 @@ for p in $PACKAGES; do
 done
 
 sha256sum "$OUT_NAME" "${OUT_NAME%.img}.manifest" > SHA256SUMS
-# Tripwire on the size regression above: upstream is ~265 MiB, so anything
-# past 400 MiB means compression was lost again.
+# Tripwire on the size regression above: upstream is ~265 MiB and the
+# baked canal tarball ~271 MiB (already zstd, qcow2 -c cannot shrink it),
+# so anything past 750 MiB means compression was lost again.
 size=$(stat -c %s "$OUT_NAME")
 echo "image size: $size bytes"
-[ "$size" -lt 419430400 ] || {
+[ "$size" -lt 786432000 ] || {
   echo "FATAL: $OUT_NAME is ${size}B -- compression was lost" >&2; exit 1; }
 echo "==> built"
 cat SHA256SUMS

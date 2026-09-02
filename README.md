@@ -7,7 +7,7 @@ This repository is **public for one reason**: OpenTofu's
 no authentication of any kind (verified against the provider schema — the
 resource has no header or credential attribute). Proxmox must therefore be
 able to fetch the image anonymously. Nothing here is secret: it is a stock
-Ubuntu image plus two packages.
+Ubuntu image plus two packages and the RKE2 canal images.
 
 ## `ubuntu-2404-k8s`
 
@@ -29,14 +29,29 @@ Baking them also removes an `apt-get update` from the node-provisioning
 path and the ~0.18 GiB of `/var/lib/apt/lists` it left on a 6.57 GiB
 rootfs.
 
+### `rke2-images-canal` airgap tarball
+
+The RKE2 canal (CNI) images are baked into
+`/var/lib/rancher/rke2/agent/images/`, which rke2 imports into containerd
+at startup — before anything needs the network. Without this, a fresh
+node deadlocks for ~5–6 minutes: the node's registry mirrors resolve to
+core's MetalLB LB IP, kube-proxy DNATs that to traefik *pod* IPs, and pod
+IPs only route once canal is up — so every pull, including canal's own,
+blackholes through TCP timeouts until containerd falls back to the
+upstream endpoint. Measured on a live autoscale event 2026-09-02: every
+first-batch image on a fresh node took 5–6 min (a 321 KB pause image
+included), then 1–5 s each once canal was running.
+
 ### The trade this makes
 
 Installing at first boot tracked the archive; a baked image freezes these
 two packages until the next build. That is why the package list is kept to
 what actually breaks when absent — everything else should stay on the
 node's own update path. Rebuild (`workflow_dispatch`) when the upstream
-pin in `images/ubuntu-2404-k8s/image.env` moves or either package needs a
-security update.
+pin in `images/ubuntu-2404-k8s/image.env` moves, either package needs a
+security update, or infra bumps its downstream RKE2 version (bump
+`RKE2_VERSION`/`CANAL_IMAGES_SHA256` to match — stale canal images are
+degraded-not-broken: unmatched tags pull the slow way).
 
 ### Consuming a build
 
