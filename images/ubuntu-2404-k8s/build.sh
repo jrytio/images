@@ -49,13 +49,26 @@ echo "==> mapping the image"
 sudo modprobe nbd max_part=8
 sudo qemu-nbd -c "$NBD" -f qcow2 raw.qcow2
 # Give the kernel a moment to publish the partition nodes.
+sudo partprobe "$NBD" 2>/dev/null || true
+sudo udevadm settle || true
 for _ in $(seq 1 20); do [ -e "${NBD}p1" ] && break; sleep 0.5; done
 
 # The cloud image carries an EFI and a bcachefs/boot partition alongside
 # root; pick the ext4 one rather than assuming p1 keeps its number.
+#
+# Retried: the partition node existing does not mean its FSTYPE is readable
+# yet -- lsblk asks udev, which may still be probing, so a single pass can
+# see every partition as blank and fail a perfectly good image (a rerun of
+# the same commit then succeeds). blkid reads the superblock directly and
+# covers the case where udev's db never catches up.
 ROOT=""
-for p in "${NBD}"p*; do
-  if [ "$(lsblk -no FSTYPE "$p" 2>/dev/null)" = "ext4" ]; then ROOT="$p"; break; fi
+for _ in $(seq 1 20); do
+  for p in "${NBD}"p*; do
+    fstype="$(lsblk -no FSTYPE "$p" 2>/dev/null)"
+    [ -n "$fstype" ] || fstype="$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)"
+    if [ "$fstype" = "ext4" ]; then ROOT="$p"; break 2; fi
+  done
+  sleep 0.5
 done
 [ -n "$ROOT" ] || { echo "FATAL: no ext4 root partition in the image" >&2; exit 1; }
 echo "    root partition: $ROOT"
