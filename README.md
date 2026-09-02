@@ -42,6 +42,19 @@ upstream endpoint. Measured on a live autoscale event 2026-09-02: every
 first-batch image on a fresh node took 5–6 min (a 321 KB pause image
 included), then 1–5 s each once canal was running.
 
+### RKE2 installer + artifacts
+
+`/opt/install.sh` plus `/opt/rke2-artifacts/` (the `rke2.linux-amd64.tar.gz`
+and `sha256sum-amd64.txt` for `RKE2_VERSION`) are baked at the exact paths
+CABPR's `airGapped: true` mode hard-codes, so node provisioning installs
+RKE2 from the local disk instead of github.com — the last WAN dependency
+on the scale-up critical path. infra pins `airGappedChecksum` (the sha256
+of the baked `sha256sum-amd64.txt`) in its RKE2 templates, so a node
+cloned from an image whose artifacts don't match what infra expects fails
+at install time instead of joining with the wrong version. RKE2 upgrades
+therefore move image-first: bump here, build, bump infra's image pin +
+`airGappedChecksum` + cluster version together.
+
 ### The trade this makes
 
 Installing at first boot tracked the archive; a baked image freezes these
