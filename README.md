@@ -55,6 +55,28 @@ at install time instead of joining with the wrong version. RKE2 upgrades
 therefore move image-first: bump here, build, bump infra's image pin +
 `airGappedChecksum` + cluster version together.
 
+### Secondary-NIC autoconf guard
+
+`/etc/systemd/network/10-netplan-eth{1..8}.network.d/80-no-autoconf.conf`
+turns off IPv6 link-local, router advertisements, LLMNR and mDNS on every
+**secondary** NIC (netplan ids `eth1`–`eth8`; `eth0` is untouched), and
+marks them not required for online. infra's `workerWanVlans` gives a
+cluster's workers extra, deliberately **unaddressed** NICs on WAN VLANs
+as macvlan masters for pods. CAPMOX's network-config leaves link-local
+and RA at networkd's defaults and is applied before any user-data runs.
+So infra's own drop-in could only arrive after each such NIC had already
+come up with an `fe80::` address. Only config present on disk when
+networkd first starts closes that window, which is why it lives in the
+image.
+
+- **Address-agnostic.** A secondary NIC that netplan *does* address keeps
+  its address; it only loses IPv6 autoconf.
+- **Inert on one-NIC nodes.** A drop-in for a `.network` file that
+  doesn't exist is never read.
+- **Paired with infra.** infra's `wan-legs-settle` refuses to start RKE2
+  on a WAN-leg worker that lacks this file, so a clone of an older
+  template fails loudly instead of repeating the window.
+
 ### The trade this makes
 
 Installing at first boot tracked the archive; a baked image freezes these

@@ -187,12 +187,60 @@ sudo install -D -m 0644 sha256sum-amd64.txt "$MNT/opt/rke2-artifacts/sha256sum-a
 sudo install -m 0755 install.sh "$MNT/opt/install.sh"
 rm -f rke2.linux-amd64.tar.gz sha256sum-amd64.txt install.sh
 
+# No IPv6 autoconfiguration on any SECONDARY NIC, from the very first
+# networkd start. infra's workerWanVlans (jrytio/infra
+# docs/superpowers/plans/2026-09-29-worker-wan-legs.md) gives a cluster's
+# workers extra, deliberately unaddressed NICs on WAN VLANs, as macvlan
+# masters for pods. CAPMOX renders them as netplan ids eth1..ethN with
+# dhcp4/dhcp6 false, but nothing about link-local or RA, and its network-
+# config is applied by cloud-init-local before anything in user-data can
+# run -- so without this every such NIC came up with an fe80 address (and
+# accepted router advertisements) for the seconds before infra's own
+# drop-in landed. Only config already on disk when networkd first starts
+# closes that window.
+#
+# Keyed on netplan's generated file name (10-netplan-eth<N>.network),
+# never on a kernel name, and only for eth1..eth8: eth0 is every node's
+# addressed NIC and is not touched. Address-agnostic on purpose -- a
+# secondary NIC that IS given a static address by netplan keeps it (these
+# keys add no Address= and clear none); it just gets no link-local, no
+# SLAAC and no LLMNR/mDNS responder. RequiredForOnline=no because a link
+# with no address never reaches networkd's "degraded", and
+# systemd-networkd-wait-online would otherwise hold cloud-init's network
+# stage for two minutes on every boot of such a node. Inert on a node
+# with one NIC: a drop-in for a .network file that does not exist is
+# never read.
+echo "==> baking the secondary-NIC autoconf guard (eth1..eth8)"
+for n in 1 2 3 4 5 6 7 8; do
+  sudo install -D -m 0644 /dev/stdin \
+    "$MNT/etc/systemd/network/10-netplan-eth$n.network.d/80-no-autoconf.conf" <<'NET'
+# Baked by jrytio/images (ubuntu-2404-k8s): no IPv6 autoconfiguration on a
+# secondary NIC. See build.sh for why this has to exist before first boot.
+[Link]
+RequiredForOnline=no
+
+[Network]
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+LLMNR=no
+MulticastDNS=no
+NET
+done
+for n in 1 2 3 4 5 6 7 8; do
+  grep -qx 'LinkLocalAddressing=no' \
+    "$MNT/etc/systemd/network/10-netplan-eth$n.network.d/80-no-autoconf.conf" || {
+    echo "FATAL: the eth$n autoconf guard was not written" >&2; exit 1; }
+done
+[ ! -e "$MNT/etc/systemd/network/10-netplan-eth0.network.d" ] || {
+  echo "FATAL: something wrote a drop-in for eth0, every node's addressed NIC" >&2; exit 1; }
+
 sudo tee "$MNT/etc/infra-image" >/dev/null <<EOF
 upstream_url=$UPSTREAM_URL
 upstream_sha256=$UPSTREAM_SHA256
 packages=$PACKAGES
 rke2_canal_images=$RKE2_VERSION
 rke2_artifacts=$RKE2_VERSION
+secondary_nic_guard=eth1-eth8
 source_repo=${GITHUB_REPOSITORY:-local}
 source_commit=${GITHUB_SHA:-unknown}
 EOF
