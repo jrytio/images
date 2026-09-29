@@ -204,7 +204,10 @@ rm -f rke2.linux-amd64.tar.gz sha256sum-amd64.txt install.sh
 # addressed NIC and is not touched. Address-agnostic on purpose -- a
 # secondary NIC that IS given a static address by netplan keeps it (these
 # keys add no Address= and clear none); it just gets no link-local, no
-# SLAAC and no LLMNR/mDNS responder. RequiredForOnline=no because a link
+# SLAAC, no LLMNR/mDNS responder and no per-link DNS. DNS=/Domains= clear
+# the nameservers CAPMOX copies onto EVERY device, so no secondary link
+# is ever a resolver route; the node resolves through eth0, as it always
+# has. RequiredForOnline=no because a link
 # with no address never reaches networkd's "degraded", and
 # systemd-networkd-wait-online would otherwise hold cloud-init's network
 # stage for two minutes on every boot of such a node. Inert on a node
@@ -224,12 +227,16 @@ LinkLocalAddressing=no
 IPv6AcceptRA=no
 LLMNR=no
 MulticastDNS=no
+DNS=
+Domains=
 NET
 done
 for n in 1 2 3 4 5 6 7 8; do
-  grep -qx 'LinkLocalAddressing=no' \
-    "$MNT/etc/systemd/network/10-netplan-eth$n.network.d/80-no-autoconf.conf" || {
-    echo "FATAL: the eth$n autoconf guard was not written" >&2; exit 1; }
+  for key in 'LinkLocalAddressing=no' 'IPv6AcceptRA=no' 'DNS=' 'RequiredForOnline=no'; do
+    grep -qx "$key" \
+      "$MNT/etc/systemd/network/10-netplan-eth$n.network.d/80-no-autoconf.conf" || {
+      echo "FATAL: the eth$n autoconf guard lacks $key" >&2; exit 1; }
+  done
 done
 [ ! -e "$MNT/etc/systemd/network/10-netplan-eth0.network.d" ] || {
   echo "FATAL: something wrote a drop-in for eth0, every node's addressed NIC" >&2; exit 1; }

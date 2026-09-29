@@ -58,8 +58,8 @@ therefore move image-first: bump here, build, bump infra's image pin +
 ### Secondary-NIC autoconf guard
 
 `/etc/systemd/network/10-netplan-eth{1..8}.network.d/80-no-autoconf.conf`
-turns off IPv6 link-local, router advertisements, LLMNR and mDNS on every
-**secondary** NIC (netplan ids `eth1`–`eth8`; `eth0` is untouched), and
+turns off IPv6 link-local, router advertisements, LLMNR, mDNS and per-link
+DNS on every **secondary** NIC (netplan ids `eth1`–`eth8`; `eth0` is untouched), and
 marks them not required for online. infra's `workerWanVlans` gives a
 cluster's workers extra, deliberately **unaddressed** NICs on WAN VLANs
 as macvlan masters for pods. CAPMOX's network-config leaves link-local
@@ -70,7 +70,9 @@ networkd first starts closes that window, which is why it lives in the
 image.
 
 - **Address-agnostic.** A secondary NIC that netplan *does* address keeps
-  its address; it only loses IPv6 autoconf.
+  its address; it only loses IPv6 autoconf and per-link DNS (CAPMOX copies
+  the cluster's nameservers onto every device; the node resolves through
+  `eth0`).
 - **Inert on one-NIC nodes.** A drop-in for a `.network` file that
   doesn't exist is never read.
 - **Paired with infra.** infra's `wan-legs-settle` refuses to start RKE2
